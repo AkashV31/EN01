@@ -1,6 +1,8 @@
 from schemas import GeoPoint
 
 
+# teammate note:
+# score = prioritize hotter areas (lst) and penalize vegetation (ndvi)
 def _score(point: GeoPoint) -> float:
     return (point.lst * 0.7) - (point.ndvi * 0.3)
 
