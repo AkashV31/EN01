@@ -18,6 +18,7 @@ class GeoPoint(BaseModel):
     ndvi: float
     lst: float
     cost: int
+    reason: str | None = None
 
 
 class OptimizeRequest(BaseModel):
