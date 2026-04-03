@@ -20,8 +20,9 @@ def optimize(budget: int, geo_data: list[GeoPoint]) -> tuple[list[GeoPoint], int
     for point in ranked:
         if point.cost <= remaining:
             # teammate note: adding explanation for why this point was chosen
-            point.reason = f"High heat ({point.lst}) and low vegetation ({point.ndvi})"
-            selected.append(point)
+            # Use model_copy so we don't mutate the original Pydantic object (immutable in v2)
+            annotated = point.model_copy(update={"reason": f"High heat ({point.lst}) and low vegetation ({point.ndvi})"})
+            selected.append(annotated)
             remaining -= point.cost
 
     return selected, budget - remaining

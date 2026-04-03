@@ -6,6 +6,7 @@
 # Keep this thin (no business logic here).
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from schemas import (
     IntentRequest, IntentResponse,
     OptimizeRequest, OptimizeResponse,
@@ -16,6 +17,21 @@ from services.optimizer import optimize
 from services.esg import generate_report
 
 app = FastAPI(title="CanopyROI", version="1.0.0")
+
+# Allow the Next.js dev server and any local origin to call the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/")
+def health_check():
+    """Health-check — returns 200 when the API is reachable."""
+    return {"status": "ok", "service": "CanopyROI"}
 
 
 @app.post("/parse-intent", response_model=IntentResponse)
