@@ -169,9 +169,9 @@ function StepTab({ n, label, state, onClick }: {
 }
 
 /* ── Step 1 ─────────────────────────────────────────────────────────── */
-function Step1({ onRun, loading, currentCity, onQueryChange }: {
+function Step1({ onRun, loading, currentCity, onQueryChange, initialQuery }: {
   onRun: (budget: number, query: string, droughtMode: boolean, city: string) => void
-  loading: boolean; currentCity: string; onQueryChange?: (q: string) => void
+  loading: boolean; currentCity: string; onQueryChange?: (q: string) => void; initialQuery?: string
 }) {
   const { lang } = useLang()
   const initialProfile = getCityProfile(currentCity)
@@ -190,6 +190,12 @@ function Step1({ onRun, loading, currentCity, onQueryChange }: {
 
   const cities = STATES[selectedState] || []
   const speciesList = getSpeciesForCity(city || DEFAULT_CITY)
+
+  useEffect(() => {
+    if (initialQuery && initialQuery !== query) {
+      setQuery(initialQuery)
+    }
+  }, [initialQuery, query])
 
   useEffect(() => {
     if (!city) { setMlRecs([]); return }
@@ -437,11 +443,15 @@ function Step3({ esg, baseCity, compareCity, compareOptions, onCompareChange, lo
   const { lang } = useLang()
   if (!esg) return null
 
+  const toTonnes = (value: number) => (value > 1000 ? value / 1000 : value)
+  const sourceCarbonTonnes = Number(toTonnes(esg.carbon_10yr).toFixed(2))
+  const compareCarbonTonnes = Number(toTonnes(esg.compare_carbon).toFixed(2))
+
   // Normalize comparison data so trees & carbon don't mix axes
   // Use carbon in tonnes for both cities
   const comparisonData = [
-    { name: baseCity, carbon_t: Number((esg.carbon_10yr / 1000).toFixed(2)), trees: esg.trees_planted },
-    { name: esg.compare_city, carbon_t: Number((esg.compare_carbon).toFixed(2)), trees: esg.compare_trees },
+    { name: baseCity, carbon_t: sourceCarbonTonnes, trees: esg.trees_planted },
+    { name: esg.compare_city, carbon_t: compareCarbonTonnes, trees: esg.compare_trees },
   ]
 
   const temporalData = [
@@ -477,7 +487,7 @@ function Step3({ esg, baseCity, compareCity, compareOptions, onCompareChange, lo
       <div className="grid grid-cols-3 gap-2">
         {[
           { value: esg.trees_planted.toLocaleString(), label: t('trees_planted', lang), color: 'var(--olive-700)' },
-          { value: `${(esg.carbon_10yr / 1000).toFixed(1)}t`, label: t('carbon_offset', lang), color: 'var(--olive-600)' },
+          { value: `${sourceCarbonTonnes.toFixed(1)}t`, label: t('carbon_offset', lang), color: 'var(--olive-600)' },
           { value: `−${esg.temp_reduction.toFixed(1)}°C`, label: t('temp_reduction', lang), color: '#6b5433' },
         ].map(stat => (
           <div key={stat.label} className="p-3 rounded-md text-center bg-white" style={{ border: '1px solid var(--border)' }}>
@@ -528,8 +538,8 @@ function Step3({ esg, baseCity, compareCity, compareOptions, onCompareChange, lo
         </ResponsiveContainer>
         <div className="grid grid-cols-2 gap-2 mt-3">
           {[
-            { name: baseCity, trees: esg.trees_planted, carbon: (esg.carbon_10yr / 1000).toFixed(2) },
-            { name: esg.compare_city, trees: esg.compare_trees, carbon: Number(esg.compare_carbon).toFixed(2) },
+            { name: baseCity, trees: esg.trees_planted, carbon: sourceCarbonTonnes.toFixed(2) },
+            { name: esg.compare_city, trees: esg.compare_trees, carbon: compareCarbonTonnes.toFixed(2) },
           ].map(c => (
             <div key={c.name} className="rounded-md bg-stone-50 p-3" style={{ border: '1px solid var(--border)' }}>
               <div className="text-[10px] uppercase tracking-widest text-stone-400" style={{ fontFamily: 'DM Mono,monospace' }}>{c.name}</div>
@@ -718,7 +728,7 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto p-5">
-            {step === 1 && <Step1 onRun={handleRun} loading={loading} currentCity={currentCity} onQueryChange={setAiQuery} />}
+            {step === 1 && <Step1 onRun={handleRun} loading={loading} currentCity={currentCity} onQueryChange={setAiQuery} initialQuery={aiQuery} />}
             {step === 2 && <Step2 selected={selected} all={allZones} onNext={() => fetchReport(compareCity, true)} loading={loading} droughtMode={droughtMode} cityName={currentCity} />}
             {step === 3 && <Step3 esg={esg} baseCity={currentCity} compareCity={compareCity} compareOptions={compareOptions} onCompareChange={handleCompareChange} loadingCompare={loading} />}
           </div>

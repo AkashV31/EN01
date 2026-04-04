@@ -1,9 +1,11 @@
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GeoPoint(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     lat: float
     lon: float
     ndvi: float
@@ -12,9 +14,13 @@ class GeoPoint(BaseModel):
     zone_name: Optional[str] = None
     city: Optional[str] = "Pune"
     state: Optional[str] = "Maharashtra"
+    neighbourhood: Optional[str] = None
     reason: Optional[str] = None
     compliance_penalty: float = Field(default=1.0, ge=0.0, le=1.0)
-    Drought_Impact_Score: float | None = 0.0
+    soil_moisture: float | None = None
+    rainfall_mm: float | None = None
+    water_available: bool | None = None
+    drought_impact_score: float | None = Field(default=0.0, alias="Drought_Impact_Score")
 
 
 class LocationRecommendation(BaseModel):

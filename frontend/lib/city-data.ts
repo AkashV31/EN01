@@ -604,27 +604,30 @@ export function buildFallbackESGReport(selected: GeoPoint[], sourceCity: string,
   const source = getCityProfile(sourceCity)
   const compare = getCityProfile(compareCity)
   const treesPlanted = selected.length * 100
-  const carbonKg = Number((treesPlanted * 21.77).toFixed(2))
-  const tempReduction = Number((treesPlanted * 0.02).toFixed(2))
+  const effectiveTrees = Math.round(treesPlanted * 0.85)
+  const carbonKg = Number((effectiveTrees * 21.77 * 10).toFixed(2))
+  const tempReduction = Number((effectiveTrees * 0.02).toFixed(2))
   const budgetUtilized = selected.reduce((sum, point) => sum + point.cost, 0)
-  const carbonCreditValue = Number(((carbonKg / 1000) * 600).toFixed(2))
+  const carbonCreditValue = Math.round(carbonKg * 0.6)
   const roiPct = budgetUtilized > 0
     ? Number((((carbonCreditValue - budgetUtilized) / budgetUtilized) * 100).toFixed(1))
     : 0
 
   const ratio = deriveTreesPerZone(sourceCity, compareCity)
+  const compareTrees = Math.round(effectiveTrees * ratio)
+  const compareCarbonKg = Number((compareTrees * 21.77 * 10).toFixed(2))
 
   return {
     source_city: sourceCity,
-    trees_planted: treesPlanted,
+    trees_planted: effectiveTrees,
     carbon_10yr: carbonKg,
     temp_reduction: tempReduction,
     budget_utilized: budgetUtilized,
     carbon_credit_value: carbonCreditValue,
     roi_pct: roiPct,
     compare_city: compareCity,
-    compare_trees: Math.round(treesPlanted * ratio),
-    compare_carbon: Number((((carbonKg / 1000) * ratio).toFixed(2))),
+    compare_trees: compareTrees,
+    compare_carbon: compareCarbonKg,
     urgency_zones: selected
       .filter((point) => point.lst >= 42 || point.ndvi <= 0.12)
       .sort((a, b) => b.lst - a.lst)
@@ -643,9 +646,9 @@ export function buildFallbackESGReport(selected: GeoPoint[], sourceCity: string,
       'SDG 3 – Good Health',
       'SDG 15 – Life on Land',
     ],
-    weekly_trees: Math.round(treesPlanted / 52),
-    monthly_trees: Math.round(treesPlanted / 12),
-    yearly_trees: treesPlanted,
+    weekly_trees: Math.round(effectiveTrees / 52),
+    monthly_trees: Math.round(effectiveTrees / 12),
+    yearly_trees: effectiveTrees,
     impact_profile: [
       { metric: 'Carbon', source: source.impact.carbon, compare: compare.impact.carbon },
       { metric: 'Shade', source: source.impact.shade, compare: compare.impact.shade },

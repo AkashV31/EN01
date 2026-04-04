@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(encoding='utf-8-sig')
 
 import logging
 from fastapi import FastAPI, HTTPException
@@ -145,7 +145,12 @@ async def optimize_endpoint(body: OptimizeRequest) -> OptimizeResponse:
 
 @app.post("/optimize/compliant", response_model=OptimizeResponse)
 async def optimize_compliant_endpoint(body: CompliantOptimizeRequest) -> OptimizeResponse:
-    selected, total_cost = optimize_with_compliance(body.budget, body.geo_data, body.is_gst_amnesty_quarter)
+    selected, total_cost = optimize_with_compliance(
+        body.budget,
+        body.geo_data,
+        body.is_gst_amnesty_quarter,
+        body.drought_mode,
+    )
     selected_zone_names = [point.zone_name or f"{point.lat:.4f},{point.lon:.4f}" for point in selected]
     effective_location = body.selected_location or body.target_zone
     alternatives, drought_insights, fallback_suggestions = suggest_alternatives(
@@ -153,6 +158,7 @@ async def optimize_compliant_endpoint(body: CompliantOptimizeRequest) -> Optimiz
         selected_location=effective_location,
         geo_data=body.geo_data,
         limit=6,
+        drought_mode=body.drought_mode,
     )
     llm_payload = await enrich_optimization_with_llm(
         selected_zone_names=selected_zone_names,
