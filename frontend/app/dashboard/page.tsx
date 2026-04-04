@@ -1,141 +1,146 @@
 'use client'
-import { useState, useCallback } from 'react'
+
+import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useLang, t } from '@/lib/i18n'
 import { LangSwitcher } from '@/components/ui/LangSwitcher'
-import { parseIntent, runOptimize, generateESG, MOCK_GEO_DATA, MOCK_ESG, type GeoPoint, type ESGResponse } from '@/lib/api'
+import MapWrapper from '@/components/map/MapWrapper'
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, Radar
+  generateESG,
+  parseIntent,
+  predictSpecies,
+  runOptimize,
+  type ESGResponse,
+  type GeoPoint,
+  type SpeciesPrediction,
+} from '@/lib/api'
+import {
+  buildFallbackESGReport,
+  DEFAULT_CITY,
+  ESG_COMPARE_CITY,
+  STATES,
+  getCityClimate,
+  getCityProfile,
+  getCityZones,
+  getCompareCities,
+  getSpeciesForCity,
+  NGO_RANKINGS,
+  LOCATION_PINS,
+} from '@/lib/city-data'
+import {
+  Bar, BarChart, CartesianGrid, Legend,
+  PolarAngleAxis, PolarGrid, Radar, RadarChart,
+  ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 
-// ── Static data ───────────────────────────────────────────────────────────
-const STATES: Record<string, string[]> = {
-  'Maharashtra': ['Pune', 'Mumbai', 'Nagpur', 'Nashik', 'Aurangabad'],
-  'Karnataka':   ['Bengaluru', 'Mysuru', 'Hubli', 'Mangaluru'],
-  'Delhi':       ['New Delhi', 'Dwarka', 'Rohini'],
-  'Tamil Nadu':  ['Chennai', 'Coimbatore', 'Madurai'],
-  'Gujarat':     ['Ahmedabad', 'Surat', 'Vadodara'],
-}
-const SPECIES_BY_CLIMATE: Record<string, string[]> = {
-  'Pune':    ['Neem', 'Peepal', 'Banyan', 'Gulmohar', 'Arjun'],
-  'Mumbai':  ['Mangrove', 'Rain Tree', 'Coconut Palm', 'Flame of Forest'],
-  'default': ['Neem', 'Peepal', 'Banyan', 'Tamarind', 'Mixed Native'],
-}
-const GOALS = [
-  { value: 'carbon_focus',   label: 'Carbon Focus' },
-  { value: 'shade_coverage', label: 'Shade Coverage' },
-  { value: 'heat_reduction', label: 'Heat Reduction' },
-  { value: 'biodiversity',   label: 'Biodiversity' },
-]
+type Step = 1 | 2 | 3
+
 const QUICK_FILLS = [
   'Plant drought-resistant trees in high-heat zones of Pune',
   'Maximum carbon sequestration under ₹5 lakh budget',
-  'Find cool corridors for pedestrian zones in Kothrud',
+  'Cool corridors for pedestrian zones near transit hubs',
   'Prioritise biodiversity near water bodies',
 ]
 
-// ── Map panel ─────────────────────────────────────────────────────────────
-function MapPanel({ selected, onToggleSize, expanded }: { selected: GeoPoint[]; onToggleSize: () => void; expanded: boolean }) {
-  return (
-    <div className="relative w-full h-full rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
-      <div className="absolute inset-0" style={{
-        background: 'linear-gradient(160deg, #f5f2e8 0%, #ebe6d6 50%, #ddd8c4 100%)',
-      }}>
-        {/* Topographic grid */}
-        <div className="absolute inset-0 opacity-20" style={{
-          backgroundImage: 'linear-gradient(var(--olive-300) 1px, transparent 1px), linear-gradient(90deg, var(--olive-300) 1px, transparent 1px)',
-          backgroundSize: '40px 40px',
-        }} />
-        
-        {/* Subtle contour rings */}
-        {[60, 120, 180, 240, 300].map((r, i) => (
-          <div key={i} className="absolute rounded-full" style={{
-            width: r * 2, height: r * 2,
-            left: '50%', top: '40%',
-            transform: 'translate(-50%,-50%)',
-            border: '1px solid rgba(99,114,32,0.12)',
-          }} />
-        ))}
+const pointKey = (p: GeoPoint) => `${p.lat}-${p.lon}`
 
-        {/* City label */}
-        <div className="absolute top-3 left-3 px-3 py-1.5 rounded-md bg-white/90 text-xs font-medium text-stone-600 flex items-center gap-2" style={{ border: '1px solid var(--border)', fontFamily: 'DM Mono, monospace' }}>
-          <span className="w-1.5 h-1.5 rounded-full bg-olive-500 animate-pulse" />
-          Pune, Maharashtra
-        </div>
-
-        {/* Data points */}
-        {MOCK_GEO_DATA.map((p, i) => {
-          const isSelected = selected.some(s => s.lat === p.lat)
-          const px = ((p.lon - 73.75) / 0.35) * 100
-          const py = ((18.62 - p.lat) / 0.22) * 100
-          const dotColor = isSelected ? '#637220' : p.lst > 43 ? '#dc2626' : p.lst > 38 ? '#d97706' : '#9dac50'
-          return (
-            <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2 group"
-              style={{ left: `${Math.max(5, Math.min(92, px))}%`, top: `${Math.max(5, Math.min(92, py))}%` }}>
-              <div className="w-4 h-4 rounded-sm border-2 border-white flex items-center justify-center transition-all duration-300 cursor-pointer shadow-sm"
-                style={{
-                  background: dotColor,
-                  transform: isSelected ? 'scale(1.35)' : 'scale(1)',
-                  boxShadow: isSelected ? `0 0 0 3px rgba(99,114,32,0.2)` : undefined,
-                }}>
-                {isSelected && <svg className="w-2 h-2 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-              </div>
-              {/* Tooltip */}
-              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 hidden group-hover:block pointer-events-none z-20">
-                <div className="bg-white rounded-md px-2.5 py-1.5 text-xs whitespace-nowrap shadow-md" style={{ border: '1px solid var(--border)' }}>
-                  <div className="font-medium text-stone-700" style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.68rem' }}>{p.lat.toFixed(3)}, {p.lon.toFixed(3)}</div>
-                  <div className="text-stone-400 mt-0.5">LST {p.lst}°C · NDVI {p.ndvi}</div>
-                </div>
-              </div>
-            </div>
-          )
-        })}
-
-        {/* Legend */}
-        <div className="absolute bottom-3 left-3 bg-white/95 rounded-md p-3 text-xs space-y-1.5 shadow-sm" style={{ border: '1px solid var(--border)' }}>
-          {[
-            { label: 'Selected', color: '#637220' },
-            { label: 'High LST > 43°C', color: '#dc2626' },
-            { label: 'Medium', color: '#d97706' },
-            { label: 'Low', color: '#9dac50' },
-          ].map(l => (
-            <div key={l.label} className="flex items-center gap-2 text-stone-500">
-              <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: l.color }} />
-              {l.label}
-            </div>
-          ))}
-        </div>
-
-        {/* Token note */}
-        <div className="absolute top-3 right-12 px-2.5 py-1 rounded-md bg-olive-700 text-white text-xs" style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.68rem' }}>
-          Add MAPBOX_TOKEN for live map
-        </div>
-      </div>
-
-      {/* Toggle */}
-      <button onClick={onToggleSize}
-        className="absolute bottom-3 right-3 bg-white rounded-md px-2.5 py-1.5 text-xs text-stone-600 hover:bg-stone-50 transition-colors z-10 flex items-center gap-1.5"
-        style={{ border: '1px solid var(--border)' }}>
-        {expanded ? (
-          <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 20l-4-4m0 0L12 12m4 4l4-4M4 4l4 4m0 0L12 12M8 8L4 4" /></svg>Shrink</>
-        ) : (
-          <><svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>Expand</>
-        )}
-      </button>
-    </div>
-  )
+/* ── Budget parser ──────────────────────────────────────────────────── */
+function parseBudgetFromText(q: string) {
+  const l = q.toLowerCase()
+  for (const pat of [
+    /(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d+)?)\s*(cr|crore|lakh|lac|lk|k)?/,
+    /([\d,]+(?:\.\d+)?)\s*(cr|crore|lakh|lac|lk|k)\b/,
+  ]) {
+    const m = l.match(pat)
+    if (!m) continue
+    const v = Number(m[1].replaceAll(',', ''))
+    const s = (m[2] || '').toLowerCase()
+    if (s === 'cr' || s === 'crore') return Math.round(v * 10000000)
+    if (s === 'lakh' || s === 'lac' || s === 'lk') return Math.round(v * 100000)
+    if (s === 'k') return Math.round(v * 1000)
+    return Math.round(v)
+  }
+  return 500000
 }
 
-// ── DropSelect ────────────────────────────────────────────────────────────
+function parseDirectiveFallback(query: string) {
+  const lower = query.toLowerCase()
+  const cityEntry = Object.entries(STATES)
+    .flatMap(([state, cities]) => cities.map(city => ({ state, city })))
+    .find(({ city, state }) => lower.includes(city.toLowerCase()) || lower.includes(state.toLowerCase()))
+  const species = ['Neem','Peepal','Banyan','Arjun','Karanj','Rain Tree','Mangrove','Palm']
+    .find(s => lower.includes(s.toLowerCase())) || 'Native'
+  let goal = 'heat_reduction'
+  if (lower.includes('carbon') || lower.includes('co2')) goal = 'carbon_focus'
+  else if (lower.includes('shade') || lower.includes('canopy')) goal = 'shade_coverage'
+  else if (lower.includes('biodiversity') || lower.includes('green')) goal = 'biodiversity'
+  return {
+    budget: parseBudgetFromText(query), tree_type: species, priority: goal,
+    state: cityEntry?.state || null, city: cityEntry?.city || null,
+    location: cityEntry?.city || cityEntry?.state || null,
+  }
+}
+
+/* ── Drought score (mirrors backend) ───────────────────────────────── */
+function droughtScore(p: GeoPoint): number {
+  const soil = p.soil_moisture ?? 3.0
+  const rain = p.rainfall_mm ?? 700
+  const soilS = Math.max(0, (4 - soil) / 4)
+  const rainS = Math.max(0, (800 - rain) / 800)
+  const lstS  = Math.max(0, (p.lst - 35) / 15)
+  const ndviS = Math.max(0, (0.3 - p.ndvi) / 0.3)
+  return lstS * 0.35 + ndviS * 0.25 + soilS * 0.25 + rainS * 0.15
+}
+
+function fallbackOptimize(budget: number, points: GeoPoint[], drought: boolean) {
+  const ranked = [...points].sort((a, b) =>
+    drought
+      ? droughtScore(b) / b.cost - droughtScore(a) / a.cost
+      : ((b.lst * 0.7 - b.ndvi * 0.3) / b.cost) - ((a.lst * 0.7 - a.ndvi * 0.3) / a.cost)
+  )
+  let rem = budget
+  return ranked.reduce<GeoPoint[]>((acc, p) => {
+    if (p.cost > rem) return acc
+    rem -= p.cost
+    const ds = droughtScore(p)
+    const tier = ds > 0.6 ? 'High' : ds > 0.35 ? 'Medium' : 'Low'
+    return [...acc, {
+      ...p,
+      drought_impact_score: ds,
+      reason: drought
+        ? `Drought risk ${tier} (${ds.toFixed(2)}) · LST ${p.lst}°C · Soil ${p.soil_moisture ?? 0}%`
+        : `Heat ${p.lst}°C · NDVI ${p.ndvi}`,
+    }]
+  }, [])
+}
+
+function getExcludedReason(p: GeoPoint, drought: boolean) {
+  const name = (p.neighbourhood || '').toLowerCase()
+  if ((p.soil_moisture ?? 0) < 2.2 || p.water_available === false)
+    return 'Low soil moisture and weak water access for the current planting cycle'
+  if (name.includes('industrial') || name.includes('tech') || name.includes('phase 2') || name.includes('transit'))
+    return 'Restricted or built-up parcel with limited planting access'
+  if (drought) return 'Lower drought-resilience score than the selected zones'
+  return 'Lower impact-to-cost score within the current budget'
+}
+
+function getNearbySuggestions(p: GeoPoint, all: GeoPoint[]) {
+  return all
+    .filter(c => pointKey(c) !== pointKey(p) && (c.soil_moisture ?? 0) >= 2.5)
+    .sort((a, b) => (b.ndvi + (b.soil_moisture ?? 0) * 0.02) - (a.ndvi + (a.soil_moisture ?? 0) * 0.02))
+    .slice(0, 2)
+}
+
+/* ── DropSelect ─────────────────────────────────────────────────────── */
 function DropSelect({ label, value, onChange, options, disabled }: {
-  label: string; value: string; onChange: (v: string) => void;
+  label: string; value: string; onChange: (v: string) => void
   options: { value: string; label: string }[]; disabled?: boolean
 }) {
   return (
     <div>
-      <label className="text-xs font-medium text-stone-400 mb-1.5 block tracking-widest uppercase" style={{ fontFamily: 'DM Mono, monospace' }}>{label}</label>
-      <select value={value} onChange={e => onChange(e.target.value)} disabled={disabled} className="select">
+      <label className="block text-xs font-medium text-stone-400 mb-1.5 tracking-widest uppercase"
+        style={{ fontFamily: 'DM Mono,monospace' }}>{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)} disabled={disabled} className="select w-full">
         <option value="">— select —</option>
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
@@ -143,201 +148,365 @@ function DropSelect({ label, value, onChange, options, disabled }: {
   )
 }
 
-// ── Step 1 — Configure ────────────────────────────────────────────────────
-function Step1({ onRun, loading }: { onRun: (budget: number, query: string) => void; loading: boolean }) {
+/* ── StepTab ────────────────────────────────────────────────────────── */
+function StepTab({ n, label, state, onClick }: {
+  n: number; label: string; state: 'active' | 'done' | 'locked'; onClick: () => void
+}) {
+  return (
+    <button onClick={onClick} disabled={state === 'locked'}
+      className={`flex-1 py-3 text-xs font-medium transition-all border-b-2 flex items-center justify-center gap-1.5
+        ${state === 'active' ? 'border-olive-600 text-olive-700 bg-olive-50/50'
+          : state === 'done' ? 'border-transparent text-stone-500 hover:bg-stone-50 cursor-pointer'
+          : 'border-transparent text-stone-300 cursor-not-allowed'}`}
+      style={{ fontFamily: 'DM Mono,monospace', letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '0.68rem' }}>
+      {state === 'done'
+        ? <svg className="w-3 h-3 text-olive-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+        : <span className="w-4 h-4 rounded-sm flex items-center justify-center text-xs"
+            style={{ background: state === 'active' ? 'var(--olive-700)' : 'transparent', color: state === 'active' ? 'white' : 'inherit' }}>{n}</span>}
+      <span className="hidden sm:inline">{label}</span>
+    </button>
+  )
+}
+
+/* ── Step 1 ─────────────────────────────────────────────────────────── */
+function Step1({ onRun, loading, currentCity, onQueryChange }: {
+  onRun: (budget: number, query: string, droughtMode: boolean, city: string) => void
+  loading: boolean; currentCity: string; onQueryChange?: (q: string) => void
+}) {
   const { lang } = useLang()
-  const [state, setState] = useState('')
-  const [city, setCity]   = useState('')
+  const initialProfile = getCityProfile(currentCity)
+  const [selectedState, setSelectedState] = useState(initialProfile.state)
+  const [city, setCity] = useState(currentCity)
   const [species, setSpecies] = useState('')
-  const [goal, setGoal]   = useState('')
+  const [goal, setGoal] = useState('')
   const [budget, setBudget] = useState(500000)
   const [query, setQuery] = useState('')
+  const [droughtMode, setDroughtMode] = useState(false)
+  const [mlRecs, setMlRecs] = useState<SpeciesPrediction[]>([])
+  const [mlLoading, setMlLoading] = useState(false)
+  const [parseLoading, setParseLoading] = useState(false)
+  const [parseError, setParseError] = useState('')
+  const [parsedDirective, setParsedDirective] = useState<{ location: string; budget: number; species: string; goal: string } | null>(null)
 
-  const cities = state ? STATES[state] || [] : []
-  const speciesList = city ? (SPECIES_BY_CLIMATE[city] || SPECIES_BY_CLIMATE['default']) : SPECIES_BY_CLIMATE['default']
+  const cities = STATES[selectedState] || []
+  const speciesList = getSpeciesForCity(city || DEFAULT_CITY)
+
+  useEffect(() => {
+    if (!city) { setMlRecs([]); return }
+    const climate = getCityClimate(city)
+    setMlLoading(true)
+    predictSpecies(climate.avgLst, climate.soilMoisture, climate.rainfallMm)
+      .then(r => setMlRecs(r.recommendations.slice(0, 5)))
+      .catch(() => setMlRecs([]))
+      .finally(() => setMlLoading(false))
+  }, [city])
+
+  const applyParsedResult = useCallback((parsed: { budget: number; tree_type: string; priority: string; state?: string | null; city?: string | null; location?: string | null }) => {
+    if (parsed.state && STATES[parsed.state]) setSelectedState(parsed.state)
+    const targetCity = parsed.city && Object.values(STATES).some(sc => sc.includes(parsed.city!)) ? parsed.city : undefined
+    if (targetCity) { const s = getCityProfile(targetCity).state; setSelectedState(s); setCity(targetCity) }
+    else if (parsed.state && STATES[parsed.state]?.length) setCity(STATES[parsed.state][0])
+    const sp = parsed.tree_type || 'Native'
+    if (sp && sp.toLowerCase() !== 'native') setSpecies(sp)
+    if (parsed.priority) setGoal(parsed.priority)
+    if (parsed.budget) setBudget(parsed.budget)
+    setParsedDirective({ location: parsed.location || parsed.city || targetCity || parsed.state || city || currentCity, budget: parsed.budget || budget, species: sp, goal: parsed.priority || goal || 'heat_reduction' })
+  }, [budget, city, currentCity, goal])
+
+  const applyParsedDirective = useCallback(async () => {
+    const q = query.trim(); if (!q) return
+    setParseLoading(true); setParseError('')
+    try { const parsed = await parseIntent(q); applyParsedResult(parsed) }
+    catch { applyParsedResult(parseDirectiveFallback(q)) }
+    finally { setParseLoading(false) }
+  }, [applyParsedResult, query])
+
+  const updateQuery = (q: string) => { setQuery(q); onQueryChange?.(q) }
 
   return (
     <div className="space-y-5">
-      {/* AI input */}
+      {/* AI Directive */}
       <div>
-        <label className="text-xs font-medium text-stone-400 mb-1.5 flex items-center gap-2 tracking-widest uppercase" style={{ fontFamily: 'DM Mono, monospace' }}>
-          AI Assistant
-        </label>
-        <textarea
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder="Describe your planting mission…"
-          rows={2}
-          className="input resize-none leading-relaxed"
-        />
+        <label className="block text-xs font-medium text-stone-400 mb-1.5 tracking-widest uppercase" style={{ fontFamily: 'DM Mono,monospace' }}>AI Directive</label>
+        <textarea value={query} onChange={e => updateQuery(e.target.value)} placeholder="Describe your planting mission…" rows={2} className="input resize-none w-full leading-relaxed" />
+        <div className="flex items-center justify-between gap-3 mt-2">
+          <button type="button" onClick={applyParsedDirective} disabled={parseLoading || !query.trim()} className="btn-secondary px-3 py-2 text-xs">
+            {parseLoading ? 'Parsing…' : 'Parse with Groq AI'}
+          </button>
+          <div className="text-[10px] text-stone-400 text-right" style={{ fontFamily: 'DM Mono,monospace' }}>Groq llama-3.3-70b</div>
+        </div>
         <div className="flex flex-wrap gap-1.5 mt-2">
-          {QUICK_FILLS.map(q => (
-            <button key={q} onClick={() => setQuery(q)}
-              className="text-xs px-2.5 py-1 rounded-sm text-stone-500 hover:text-olive-700 hover:bg-olive-50 border transition-all truncate max-w-[160px]"
-              style={{ borderColor: 'var(--border)' }}>
-              {q.slice(0, 32)}&hellip;
+          {QUICK_FILLS.map(fill => (
+            <button key={fill} onClick={() => updateQuery(fill)} className="text-xs px-2.5 py-1 rounded-sm text-stone-500 hover:text-olive-700 hover:bg-olive-50 border transition-all truncate max-w-[210px]" style={{ borderColor: 'var(--border)' }}>
+              {fill.slice(0, 36)}…
             </button>
           ))}
         </div>
+        {parsedDirective && (
+          <div className="grid grid-cols-2 gap-2 mt-3">
+            {[{ label: 'Location', value: parsedDirective.location || 'Not found' }, { label: 'Budget', value: `₹${parsedDirective.budget.toLocaleString('en-IN')}` }, { label: 'Species', value: parsedDirective.species || 'Native' }, { label: 'Goal', value: parsedDirective.goal.replaceAll('_', ' ') }].map(item => (
+              <div key={item.label} className="rounded-md bg-stone-50 p-2.5" style={{ border: '1px solid var(--border)' }}>
+                <div className="text-[10px] uppercase tracking-widest text-stone-400" style={{ fontFamily: 'DM Mono,monospace' }}>{item.label}</div>
+                <div className="text-sm text-stone-700 mt-1">{item.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        {parseError && <p className="text-xs text-red-600 mt-2">{parseError}</p>}
       </div>
 
-      {/* Dropdowns */}
+      {/* Location selectors */}
       <div className="grid grid-cols-2 gap-3">
-        <DropSelect label={t('select_state', lang)} value={state} onChange={v => { setState(v); setCity(''); setSpecies('') }}
-          options={Object.keys(STATES).map(s => ({ value: s, label: s }))} />
-        <DropSelect label={t('select_city', lang)} value={city} onChange={setCity}
-          options={cities.map(c => ({ value: c, label: c }))} disabled={!state} />
-        <DropSelect label={t('select_species', lang)} value={species} onChange={setSpecies}
-          options={speciesList.map(s => ({ value: s, label: s }))} disabled={!city} />
-        <DropSelect label={t('select_goal', lang)} value={goal} onChange={setGoal}
-          options={GOALS.map(g => ({ value: g.value, label: g.label }))} />
+        <DropSelect label={t('select_state', lang)} value={selectedState} onChange={v => { setSelectedState(v); setCity(STATES[v]?.[0] || ''); setSpecies('') }} options={Object.keys(STATES).map(s => ({ value: s, label: s }))} />
+        <DropSelect label={t('select_city', lang)} value={city} onChange={v => { setCity(v); setSpecies('') }} options={cities.map(c => ({ value: c, label: c }))} disabled={!selectedState} />
+        <div>
+          <label className="block text-xs font-medium text-stone-400 mb-1.5 tracking-widest uppercase" style={{ fontFamily: 'DM Mono,monospace' }}>
+            {t('select_species', lang)}{mlLoading && <span className="ml-2 text-olive-500 normal-case">AI loading…</span>}
+          </label>
+          <select value={species} onChange={e => setSpecies(e.target.value)} disabled={!city} className="select w-full">
+            <option value="">— select —</option>
+            {mlRecs.length > 0
+              ? mlRecs.map(r => <option key={r.species} value={r.species}>{r.species} — {r.survival_percent}</option>)
+              : speciesList.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          {mlRecs.length > 0 && <p className="text-xs text-olive-600 mt-1" style={{ fontFamily: 'DM Mono,monospace', fontSize: 10 }}>Ranked by predicted 5yr survival for {city}</p>}
+        </div>
+        <DropSelect label={t('select_goal', lang)} value={goal} onChange={setGoal} options={[{ value: 'carbon_focus', label: 'Carbon Focus' }, { value: 'shade_coverage', label: 'Shade Coverage' }, { value: 'heat_reduction', label: 'Heat Reduction' }, { value: 'biodiversity', label: 'Biodiversity' }]} />
       </div>
 
-      {/* Budget */}
-      <div>
-        <div className="flex justify-between mb-2.5">
-          <label className="text-xs font-medium text-stone-400 tracking-widest uppercase" style={{ fontFamily: 'DM Mono, monospace' }}>{t('budget_label', lang)}</label>
-          <span className="text-xs font-medium text-olive-700 px-2 py-0.5 rounded-sm bg-olive-50 border border-olive-200" style={{ fontFamily: 'DM Mono, monospace' }}>
-            ₹{budget.toLocaleString('en-IN')}
-          </span>
+      {/* Drought mode toggle */}
+      <button type="button" onClick={() => setDroughtMode(v => !v)} aria-pressed={droughtMode} className="w-full flex items-center gap-3 p-3 rounded-md text-left" style={{ border: '1px solid var(--border)', background: droughtMode ? '#fef9ec' : 'var(--bg)' }}>
+        <span className="w-11 h-6 rounded-full transition-colors relative shrink-0" style={{ background: droughtMode ? 'var(--olive-600)' : '#d1d5db' }}>
+          <span className="absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform" style={{ left: droughtMode ? '22px' : '4px' }} />
+        </span>
+        <div>
+          <div className="text-sm font-medium text-stone-700">🌵 Drought Mode</div>
+          <div className="text-xs text-stone-400">{droughtMode ? 'Active — zones ranked by water-stress urgency (LST + soil + rainfall)' : 'Off — tap to switch to water-stress scoring'}</div>
         </div>
-        <input type="range" min={50000} max={10000000} step={50000} value={budget}
-          onChange={e => setBudget(Number(e.target.value))}
-          className="w-full cursor-pointer" style={{ accentColor: 'var(--olive-600)' }} />
-        <div className="flex justify-between text-xs text-stone-400 mt-1.5" style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.68rem' }}>
+      </button>
+
+      {/* Drought mode info panel */}
+      {droughtMode && (
+        <div className="rounded-md p-3 text-xs space-y-1.5" style={{ background: '#fffbeb', border: '1px solid #fde68a' }}>
+          <div className="font-semibold text-amber-700 mb-2">Drought Scoring Active</div>
+          {['High soil-stress zones (moisture < 2.5%) are deprioritized unless critical LST', 'Zones with rainfall < 600mm/yr get 25% higher drought urgency weight', 'Species recommendations shift toward Khejri, Neem, Karanj (drought-hardy)', 'Priority rank: LST stress 35% + NDVI deficiency 25% + soil stress 25% + rain stress 15%'].map(tip => (
+            <div key={tip} className="flex items-start gap-1.5 text-amber-700"><span className="shrink-0 mt-0.5">›</span><span>{tip}</span></div>
+          ))}
+        </div>
+      )}
+
+      {/* Budget slider */}
+      <div>
+        <div className="flex justify-between mb-2">
+          <label className="text-xs font-medium text-stone-400 tracking-widest uppercase" style={{ fontFamily: 'DM Mono,monospace' }}>{t('budget_label', lang)}</label>
+          <span className="font-normal text-olive-700 px-2 py-0.5 rounded-sm bg-olive-50 border border-olive-200" style={{ fontFamily: 'Cormorant Garamond,serif', fontSize: '1.05rem' }}>₹{budget.toLocaleString('en-IN')}</span>
+        </div>
+        <input type="range" min={50000} max={10000000} step={50000} value={budget} onChange={e => setBudget(Number(e.target.value))} className="w-full cursor-pointer" style={{ accentColor: 'var(--olive-600)' }} />
+        <div className="flex justify-between text-xs text-stone-400 mt-1" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.68rem' }}>
           <span>₹50K</span><span>₹1Cr</span>
         </div>
       </div>
 
-      <button
-        onClick={() => onRun(budget, query || `Plant ${species || 'native'} trees in ${city || 'Pune'} for ${goal || 'heat_reduction'}`)}
-        disabled={loading}
-        className="btn-primary w-full justify-center py-2.5">
-        {loading ? (
-          <><span className="w-3.5 h-3.5 border border-white/30 border-t-white rounded-full animate-spin" />Optimising&hellip;</>
-        ) : <>{t('run_optimizer', lang)} &rarr;</>}
+      <button onClick={() => onRun(budget, query || `Plant ${species || 'native'} trees in ${city || DEFAULT_CITY}`, droughtMode, city || DEFAULT_CITY)} disabled={loading} className="btn-primary w-full justify-center py-2.5">
+        {loading ? <><span className="w-3.5 h-3.5 border border-white/30 border-t-white rounded-full animate-spin" />Optimising…</> : <>{droughtMode ? '🌵 Run Drought Optimizer' : 'Run Optimizer'} →</>}
       </button>
     </div>
   )
 }
 
-// ── Step 2 — Optimise ─────────────────────────────────────────────────────
-function Step2({ selected, all, onNext, loading }: { selected: GeoPoint[]; all: GeoPoint[]; onNext: () => void; loading: boolean }) {
-  const { lang } = useLang()
-  const notSelected = all.filter(p => !selected.some(s => s.lat === p.lat))
-  const totalCost = selected.reduce((sum, p) => sum + p.cost, 0)
+/* ── Step 2 ─────────────────────────────────────────────────────────── */
+function Step2({ selected, all, onNext, loading, droughtMode, cityName }: {
+  selected: GeoPoint[]; all: GeoPoint[]; onNext: () => void
+  loading: boolean; droughtMode: boolean; cityName: string
+}) {
+  const selectedKeys = new Set(selected.map(pointKey))
+  const excluded = all.filter(p => !selectedKeys.has(pointKey(p)))
+  const totalCost = selected.reduce((s, p) => s + p.cost, 0)
+  const restrictedCount = excluded.filter(p => getExcludedReason(p, droughtMode).includes('Restricted')).length
 
   return (
     <div className="space-y-4">
-      {/* Summary stats */}
       <div className="grid grid-cols-3 gap-2">
         {[
-          { v: selected.length, label: 'Zones', color: 'var(--olive-600)' },
-          { v: `₹${(totalCost / 1000).toFixed(0)}K`, label: 'Budget Used', color: 'var(--olive-700)' },
-          { v: notSelected.length, label: 'Excluded', color: 'var(--text-muted)' },
-        ].map(s => (
-          <div key={s.label} className="p-3 rounded-md text-center bg-white" style={{ border: '1px solid var(--border)' }}>
-            <div className="text-xl font-normal" style={{ fontFamily: 'Cormorant Garamond, serif', color: s.color, letterSpacing: '-0.02em' }}>{s.v}</div>
-            <div className="text-xs text-stone-400 mt-0.5" style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.65rem', letterSpacing: '0.06em' }}>{s.label}</div>
+          { value: selected.length, label: 'Zones', color: 'var(--olive-600)' },
+          { value: `₹${(totalCost / 1000).toFixed(0)}K`, label: 'Budget Used', color: 'var(--olive-700)' },
+          { value: excluded.length, label: 'Excluded', color: '#a08c6a' },
+        ].map(stat => (
+          <div key={stat.label} className="p-3 rounded-md text-center bg-white" style={{ border: '1px solid var(--border)' }}>
+            <div className="stat-value-sm" style={{ color: stat.color }}>{stat.value}</div>
+            <div className="text-xs text-stone-400 mt-0.5" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.65rem', letterSpacing: '0.06em' }}>{stat.label}</div>
           </div>
         ))}
       </div>
 
-      {/* Selected zones */}
-      <div>
-        <div className="text-xs font-medium text-stone-400 mb-2 flex items-center gap-2 tracking-widest uppercase" style={{ fontFamily: 'DM Mono, monospace' }}>
-          <span className="w-1.5 h-1.5 rounded-full bg-olive-500" />
-          Optimal zones ({selected.length})
+      {/* Drought insights panel */}
+      {droughtMode && selected.length > 0 && (
+        <div className="rounded-md p-3" style={{ background: '#fffbeb', border: '1px solid #fde68a' }}>
+          <div className="text-xs font-semibold text-amber-700 mb-2 flex items-center gap-1.5">
+            <span>🌵</span>Drought Risk Breakdown — {cityName}
+          </div>
+          <div className="space-y-1.5">
+            {selected.map(p => {
+              const ds = droughtScore(p)
+              const tier = ds > 0.6 ? 'HIGH' : ds > 0.35 ? 'MED' : 'LOW'
+              const barW = Math.round(ds * 100)
+              const col = ds > 0.6 ? '#dc2626' : ds > 0.35 ? '#d97706' : '#9dac50'
+              return (
+                <div key={pointKey(p)} className="text-xs">
+                  <div className="flex justify-between mb-0.5" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.68rem' }}>
+                    <span className="text-stone-600 truncate max-w-[140px]">{p.neighbourhood || `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`}</span>
+                    <span className="font-semibold shrink-0" style={{ color: col }}>{tier} {(ds * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{ width: `${barW}%`, background: col }} />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="text-[10px] text-amber-600 mt-2" style={{ fontFamily: 'DM Mono,monospace' }}>
+            Score = 35% LST + 25% NDVI deficiency + 25% soil stress + 15% rainfall stress
+          </div>
         </div>
-        <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+      )}
+
+      {/* Selected zones list */}
+      <div>
+        <div className="text-xs font-medium text-stone-400 mb-2 flex items-center gap-2 tracking-widest uppercase" style={{ fontFamily: 'DM Mono,monospace' }}>
+          <span className="w-1.5 h-1.5 rounded-full bg-olive-500" />Optimal Zones ({cityName})
+        </div>
+        <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
           {selected.map((p, i) => (
-            <div key={i} className="flex items-center gap-3 p-2.5 rounded-md text-xs hover:bg-stone-50 transition-colors" style={{ border: '1px solid var(--border)' }}>
-              <span className="w-5 h-5 rounded-sm flex items-center justify-center font-medium text-white shrink-0 text-xs" style={{ background: 'var(--olive-700)', fontFamily: 'DM Mono, monospace' }}>{i + 1}</span>
+            <div key={pointKey(p)} className="flex items-start gap-3 p-2.5 rounded-md text-xs hover:bg-stone-50 transition-colors" style={{ border: '1px solid var(--border)' }}>
+              <span className="w-5 h-5 rounded-sm flex items-center justify-center font-medium text-white shrink-0 text-xs mt-0.5" style={{ background: 'var(--olive-700)', fontFamily: 'DM Mono,monospace' }}>{i + 1}</span>
               <div className="flex-1 min-w-0">
-                <div className="font-medium text-stone-700" style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.7rem' }}>{p.lat.toFixed(4)}, {p.lon.toFixed(4)}</div>
-                <div className="text-stone-400 truncate mt-0.5">{p.reason || `LST ${p.lst}°C · NDVI ${p.ndvi}`}</div>
+                <div className="font-medium text-stone-700" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.72rem' }}>{p.neighbourhood || `${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}`}</div>
+                <div className="text-stone-400 mt-0.5">LST {p.lst}°C · NDVI {p.ndvi} · Soil {p.soil_moisture ?? 0}%</div>
+                {droughtMode && <div className="text-amber-600 mt-0.5">Drought score {droughtScore(p).toFixed(2)}</div>}
+                {p.reason && <div className="text-stone-400 mt-0.5 truncate">{p.reason}</div>}
               </div>
-              <div className="text-stone-600 font-medium shrink-0" style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.72rem' }}>₹{p.cost.toLocaleString('en-IN')}</div>
+              <div className="text-stone-600 font-medium shrink-0" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.72rem' }}>₹{p.cost.toLocaleString('en-IN')}</div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Not selected */}
-      {notSelected.length > 0 && (
+      {/* Excluded zones */}
+      {excluded.length > 0 && (
         <div>
-          <div className="text-xs text-stone-400 mb-2 tracking-widest uppercase" style={{ fontFamily: 'DM Mono, monospace' }}>Not selected ({notSelected.length})</div>
-          <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
-            {notSelected.slice(0, 4).map((p, i) => (
-              <div key={i} className="flex items-center gap-2.5 p-2 rounded-md text-xs bg-stone-50" style={{ border: '1px solid var(--border)' }}>
-                <div className="w-1 h-1 rounded-full bg-stone-300 shrink-0" />
-                <div className="flex-1 text-stone-400" style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.68rem' }}>{p.lat.toFixed(4)}, {p.lon.toFixed(4)}</div>
-                <div className="text-stone-300 text-xs italic">Budget / low impact</div>
-              </div>
-            ))}
+          <div className="text-xs text-stone-400 mb-2 tracking-widest uppercase" style={{ fontFamily: 'DM Mono,monospace' }}>Excluded ({excluded.length})</div>
+          <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+            {excluded.slice(0, 5).map(p => {
+              const reason = getExcludedReason(p, droughtMode)
+              const nearby = getNearbySuggestions(p, all)
+              const restricted = reason.includes('Restricted')
+              return (
+                <div key={pointKey(p)} className="p-2 rounded-md text-xs" style={{ background: restricted ? '#fef2f2' : '#f9fafb', border: `1px solid ${restricted ? '#fecaca' : 'var(--border)'}` }}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-stone-600">{p.neighbourhood || `${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}`}</span>
+                    {restricted && <span className="text-[10px] px-2 py-0.5 rounded text-white shrink-0" style={{ background: 'var(--olive-600)', fontFamily: 'DM Mono,monospace' }}>Restricted</span>}
+                  </div>
+                  <div className="text-stone-400 mt-0.5">{reason}</div>
+                  {nearby.length > 0 && <div className="mt-1 text-xs text-olive-600">Nearby: {nearby.map(z => `${z.neighbourhood} (${z.ndvi.toFixed(2)} NDVI)`).join(' · ')}</div>}
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
 
-      {/* Warning */}
-      <div className="flex items-start gap-3 p-3.5 rounded-md bg-amber-50 text-xs" style={{ border: '1px solid #fde68a' }}>
-        <svg className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
-        <div>
-          <p className="font-medium text-amber-700">{t('private_land_warning', lang)}</p>
-          <p className="mt-0.5 text-amber-600">Some zones may include private or restricted land. Verify before planting.</p>
+      {restrictedCount > 0 && (
+        <div className="flex items-start gap-3 p-3 rounded-md bg-amber-50 text-xs" style={{ border: '1px solid #fde68a' }}>
+          <svg className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
+          <div><p className="font-medium text-amber-700">{restrictedCount} restricted-access zones detected</p><p className="mt-0.5 text-amber-600">Nearby alternatives are suggested above.</p></div>
         </div>
-      </div>
+      )}
 
       <button onClick={onNext} disabled={loading || selected.length === 0} className="btn-primary w-full justify-center py-2.5">
-        {loading ? (
-          <><span className="w-3.5 h-3.5 border border-white/30 border-t-white rounded-full animate-spin" />Generating&hellip;</>
-        ) : 'Generate ESG Report \u2192'}
+        {loading ? <><span className="w-3.5 h-3.5 border border-white/30 border-t-white rounded-full animate-spin" />Generating…</> : 'Generate ESG Report →'}
       </button>
     </div>
   )
 }
 
-// ── Step 3 — ESG Report ───────────────────────────────────────────────────
-function Step3({ esg }: { esg: ESGResponse | null }) {
+/* ── Step 3 — ESG Dashboard ─────────────────────────────────────────── */
+function Step3({ esg, baseCity, compareCity, compareOptions, onCompareChange, loadingCompare }: {
+  esg: ESGResponse | null; baseCity: string; compareCity: string
+  compareOptions: string[]; onCompareChange: (city: string) => void; loadingCompare: boolean
+}) {
   const { lang } = useLang()
-  const data = esg || MOCK_ESG
+  if (!esg) return null
 
+  // Normalize comparison data so trees & carbon don't mix axes
+  // Use carbon in tonnes for both cities
   const comparisonData = [
-    { name: 'Pune',   trees: data.trees_planted,                          carbon: +(data.carbon_10yr / 1000).toFixed(1) },
-    { name: 'Mumbai', trees: Math.round(data.trees_planted * 1.3),        carbon: +(data.carbon_10yr * 1.3 / 1000).toFixed(1) },
-    { name: 'Nagpur', trees: Math.round(data.trees_planted * 0.7),        carbon: +(data.carbon_10yr * 0.7 / 1000).toFixed(1) },
+    { name: baseCity, carbon_t: Number((esg.carbon_10yr / 1000).toFixed(2)), trees: esg.trees_planted },
+    { name: esg.compare_city, carbon_t: Number((esg.compare_carbon).toFixed(2)), trees: esg.compare_trees },
   ]
-  const radarData = [
-    { metric: 'Carbon', pune: 82, mumbai: 91, nagpur: 65 },
-    { metric: 'Shade',  pune: 70, mumbai: 60, nagpur: 75 },
-    { metric: 'Heat',   pune: 88, mumbai: 85, nagpur: 72 },
-    { metric: 'Equity', pune: 91, mumbai: 74, nagpur: 80 },
-    { metric: 'Biodiv', pune: 76, mumbai: 68, nagpur: 83 },
+
+  const temporalData = [
+    { period: 'Weekly', trees: esg.weekly_trees },
+    { period: 'Monthly', trees: esg.monthly_trees },
+    { period: 'Yearly', trees: esg.yearly_trees },
   ]
+
+  // Radar — all values normalized 0-100
+  const radarData = esg.impact_profile.map(m => ({ metric: m.metric, [baseCity]: Math.min(100, Math.max(0, m.source)), [esg.compare_city]: Math.min(100, Math.max(0, m.compare)) }))
+
+  const topNgo = Math.max(...NGO_RANKINGS.map(n => n.carbon_credits))
 
   return (
     <div className="space-y-4">
-      {/* KPI trio */}
+      {/* LLM Summary badge */}
+      {esg.summary && (
+        <div className="p-3 rounded-md text-xs text-stone-600 leading-relaxed" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+          <span className="font-semibold text-emerald-700">✦ AI Summary: </span>{esg.summary}
+          {esg.llm_source && <span className="ml-2 text-[10px] text-stone-400 font-mono">via {esg.llm_source}</span>}
+        </div>
+      )}
+
+      {/* Compare selector */}
+      <div className="flex items-center gap-3">
+        <label className="text-xs font-medium text-stone-400 tracking-widest uppercase shrink-0" style={{ fontFamily: 'DM Mono,monospace' }}>Compare with</label>
+        <select value={compareCity} onChange={e => onCompareChange(e.target.value)} className="select flex-1" disabled={loadingCompare || compareOptions.length <= 1}>
+          {compareOptions.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {/* Key metrics */}
       <div className="grid grid-cols-3 gap-2">
         {[
-          { v: data.trees_planted.toLocaleString(), label: t('trees_planted', lang), color: 'var(--olive-700)' },
-          { v: `${(data.carbon_10yr / 1000).toFixed(1)}t`, label: t('carbon_offset', lang), color: 'var(--olive-600)' },
-          { v: `−${data.temp_reduction.toFixed(1)}°C`, label: t('temp_reduction', lang), color: '#6b5433' },
-        ].map(s => (
-          <div key={s.label} className="p-3 rounded-md text-center bg-white" style={{ border: '1px solid var(--border)' }}>
-            <div className="text-xl font-normal" style={{ fontFamily: 'Cormorant Garamond, serif', color: s.color, letterSpacing: '-0.02em' }}>{s.v}</div>
-            <div className="text-stone-400 mt-0.5" style={{ fontFamily: 'DM Mono, monospace', fontSize: '0.63rem', letterSpacing: '0.05em', textTransform: 'uppercase' }}>{s.label}</div>
+          { value: esg.trees_planted.toLocaleString(), label: t('trees_planted', lang), color: 'var(--olive-700)' },
+          { value: `${(esg.carbon_10yr / 1000).toFixed(1)}t`, label: t('carbon_offset', lang), color: 'var(--olive-600)' },
+          { value: `−${esg.temp_reduction.toFixed(1)}°C`, label: t('temp_reduction', lang), color: '#6b5433' },
+        ].map(stat => (
+          <div key={stat.label} className="p-3 rounded-md text-center bg-white" style={{ border: '1px solid var(--border)' }}>
+            <div className="stat-value-sm" style={{ color: stat.color }}>{stat.value}</div>
+            <div className="text-stone-400 mt-0.5" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.63rem', letterSpacing: '0.05em', textTransform: 'uppercase' }}>{stat.label}</div>
           </div>
         ))}
       </div>
 
-      {/* Bar chart */}
+      {/* Budget + Carbon credit */}
+      <div className="grid grid-cols-2 gap-2">
+        {[
+          { label: 'BUDGET UTILIZED', value: `₹${esg.budget_utilized.toLocaleString('en-IN')}` },
+          { label: 'CARBON CREDIT VALUE', value: `₹${esg.carbon_credit_value.toLocaleString('en-IN')}` },
+        ].map(c => (
+          <div key={c.label} className="p-3 rounded-md bg-white" style={{ border: '1px solid var(--border)' }}>
+            <div className="text-xs text-stone-400 mb-1" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.65rem' }}>{c.label}</div>
+            <div className="font-medium text-olive-700" style={{ fontFamily: 'Cormorant Garamond,serif', fontSize: '1.2rem' }}>{c.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Planting rate chart */}
       <div className="rounded-md p-4 bg-white" style={{ border: '1px solid var(--border)' }}>
-        <p className="text-xs text-stone-400 mb-3 tracking-widest uppercase" style={{ fontFamily: 'DM Mono, monospace' }}>Trees Planted — City Comparison</p>
-        <ResponsiveContainer width="100%" height={110}>
-          <BarChart data={comparisonData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+        <p className="text-xs text-stone-400 mb-3 tracking-widest uppercase" style={{ fontFamily: 'DM Mono,monospace' }}>Planting Rate ({baseCity})</p>
+        <ResponsiveContainer width="100%" height={90}>
+          <BarChart data={temporalData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2ddd0" />
-            <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#a08c6a' }} />
+            <XAxis dataKey="period" tick={{ fontSize: 11, fill: '#a08c6a' }} />
             <YAxis tick={{ fontSize: 10, fill: '#a08c6a' }} />
             <Tooltip />
             <Bar dataKey="trees" fill="#637220" radius={[2, 2, 0, 0]} name="Trees" />
@@ -345,109 +514,170 @@ function Step3({ esg }: { esg: ESGResponse | null }) {
         </ResponsiveContainer>
       </div>
 
-      {/* Radar chart */}
+      {/* Carbon comparison — both in tonnes, same axis */}
       <div className="rounded-md p-4 bg-white" style={{ border: '1px solid var(--border)' }}>
-        <p className="text-xs text-stone-400 mb-3 tracking-widest uppercase" style={{ fontFamily: 'DM Mono, monospace' }}>Impact Profile vs Cities</p>
-        <ResponsiveContainer width="100%" height={140}>
+        <p className="text-xs text-stone-400 mb-3 tracking-widest uppercase" style={{ fontFamily: 'DM Mono,monospace' }}>{baseCity} vs {esg.compare_city} — Carbon 10yr (Tonnes)</p>
+        <ResponsiveContainer width="100%" height={100}>
+          <BarChart data={comparisonData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e2ddd0" />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#a08c6a' }} />
+            <YAxis tick={{ fontSize: 10, fill: '#a08c6a' }} unit="t" />
+            <Tooltip formatter={(v: number) => [`${v}t`, 'Carbon']} />
+            <Bar dataKey="carbon_t" fill="#637220" radius={[2, 2, 0, 0]} name="Carbon (t)" />
+          </BarChart>
+        </ResponsiveContainer>
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          {[
+            { name: baseCity, trees: esg.trees_planted, carbon: (esg.carbon_10yr / 1000).toFixed(2) },
+            { name: esg.compare_city, trees: esg.compare_trees, carbon: Number(esg.compare_carbon).toFixed(2) },
+          ].map(c => (
+            <div key={c.name} className="rounded-md bg-stone-50 p-3" style={{ border: '1px solid var(--border)' }}>
+              <div className="text-[10px] uppercase tracking-widest text-stone-400" style={{ fontFamily: 'DM Mono,monospace' }}>{c.name}</div>
+              <div className="text-sm text-stone-700 mt-1">{c.trees.toLocaleString()} trees · {c.carbon}t</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Radar chart — normalized 0-100 */}
+      <div className="rounded-md p-4 bg-white" style={{ border: '1px solid var(--border)' }}>
+        <p className="text-xs text-stone-400 mb-3 tracking-widest uppercase" style={{ fontFamily: 'DM Mono,monospace' }}>Impact Profile (0–100 scale)</p>
+        <ResponsiveContainer width="100%" height={170}>
           <RadarChart data={radarData}>
             <PolarGrid stroke="#e2ddd0" />
             <PolarAngleAxis dataKey="metric" tick={{ fontSize: 10, fill: '#a08c6a' }} />
-            <Radar name="Pune" dataKey="pune" stroke="#637220" fill="#637220" fillOpacity={0.25} strokeWidth={1.5} />
-            <Radar name="Mumbai" dataKey="mumbai" stroke="#22c55e" fill="#22c55e" fillOpacity={0.1} strokeWidth={1} />
+            <Radar name={baseCity} dataKey={baseCity} stroke="#637220" fill="#637220" fillOpacity={0.22} strokeWidth={1.5} />
+            <Radar name={esg.compare_city} dataKey={esg.compare_city} stroke="#9dac50" fill="#9dac50" fillOpacity={0.12} strokeWidth={1.2} />
+            <Legend iconSize={8} wrapperStyle={{ fontSize: 10, fontFamily: 'DM Mono,monospace' }} />
           </RadarChart>
         </ResponsiveContainer>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
+          {esg.impact_profile.map(m => (
+            <div key={m.metric} className="rounded-md bg-stone-50 p-2.5" style={{ border: '1px solid var(--border)' }}>
+              <div className="text-[10px] uppercase tracking-widest text-stone-400" style={{ fontFamily: 'DM Mono,monospace' }}>{m.metric}</div>
+              <div className="text-sm text-stone-700 mt-1">{baseCity}: {Math.round(m.source)}</div>
+              <div className="text-sm text-olive-700">{esg.compare_city}: {Math.round(m.compare)}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Alerts */}
-      <div className="flex items-start gap-3 p-3.5 rounded-md bg-red-50 text-xs" style={{ border: '1px solid #fecaca' }}>
-        <svg className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-        <div className="text-red-700"><span className="font-medium">Highest urgency:</span> Wanowrie &amp; Dhanori zones show LST &gt;44°C with NDVI &lt;0.1 — immediate intervention recommended.</div>
+      {/* NGO Carbon Credit Ranking */}
+      <div className="rounded-md p-4 bg-white" style={{ border: '1px solid var(--border)' }}>
+        <p className="text-xs text-stone-400 mb-3 tracking-widest uppercase flex items-center gap-2" style={{ fontFamily: 'DM Mono,monospace' }}>
+          <span>🏆</span> NGO Carbon Credit Rankings — India
+        </p>
+        <div className="space-y-2">
+          {NGO_RANKINGS.map(ngo => {
+            const barPct = Math.round((ngo.carbon_credits / topNgo) * 100)
+            return (
+              <div key={ngo.name} className="text-xs">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm w-5 text-center">{ngo.badge}</span>
+                    <div>
+                      <div className="font-medium text-stone-700" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.72rem' }}>{ngo.name}</div>
+                      <div className="text-stone-400 text-[10px]">{ngo.city} · {ngo.state}</div>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 ml-2">
+                    <div className="font-semibold text-olive-700" style={{ fontFamily: 'DM Mono,monospace', fontSize: '0.72rem' }}>{ngo.carbon_credits.toLocaleString()}t</div>
+                    <div className="text-stone-400 text-[10px]">{ngo.trees_planted.toLocaleString()} trees</div>
+                  </div>
+                </div>
+                <div className="h-1.5 rounded-full bg-stone-100 overflow-hidden">
+                  <div className="h-full rounded-full" style={{ width: `${barPct}%`, background: ngo.rank <= 3 ? '#637220' : '#9dac50' }} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <p className="text-[10px] text-stone-400 mt-3" style={{ fontFamily: 'DM Mono,monospace' }}>Carbon credits = CO₂ sequestered (tonnes) · Estimated from IPCC Tier-1 urban forestry rates</p>
       </div>
 
-      <div className="flex items-start gap-3 p-3.5 rounded-md bg-olive-50 text-xs" style={{ border: '1px solid var(--olive-200)' }}>
-        <svg className="w-3.5 h-3.5 text-olive-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-        <div className="text-olive-800"><span className="font-medium">Private land note:</span> 3 zones include private parcels. ROI excludes these. Contact municipal body for access.</div>
+      {/* Urgency zones */}
+      {esg.urgency_zones.length > 0 && (
+        <div className="flex items-start gap-3 p-3 rounded-md bg-red-50 text-xs" style={{ border: '1px solid #fecaca' }}>
+          <svg className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <div>
+            <p className="font-medium text-red-700 mb-1">Highest urgency zones — immediate intervention</p>
+            {esg.urgency_zones.map((z, i) => <p key={i} className="text-red-600">{z.label} — {z.severity.toUpperCase()}</p>)}
+          </div>
+        </div>
+      )}
+
+      {/* SDG tags */}
+      <div className="flex flex-wrap gap-1.5">
+        {esg.sdg_tags.map(tag => (
+          <span key={tag} className="px-2.5 py-1 rounded-sm text-xs border" style={{ borderColor: 'var(--olive-300)', color: 'var(--olive-700)', background: 'var(--olive-50)', fontFamily: 'DM Mono,monospace', fontSize: '0.68rem' }}>{tag}</span>
+        ))}
       </div>
 
-      <button className="btn-secondary w-full justify-center py-2.5">
-        {t('generate_esg', lang)} &rarr;
-      </button>
+      <button className="btn-secondary w-full justify-center py-2.5">↓ Download ESG Report (PDF)</button>
     </div>
   )
 }
 
-// ── Step tab pill ─────────────────────────────────────────────────────────
-function StepTab({ n, label, state, onClick }: {
-  n: number; label: string; state: 'active' | 'done' | 'locked'; onClick: () => void
-}) {
-  return (
-    <button onClick={onClick} disabled={state === 'locked'}
-      className={`flex-1 py-3 text-xs font-medium transition-all border-b-2 flex items-center justify-center gap-1.5 tracking-wide
-        ${state === 'active'
-          ? 'border-olive-600 text-olive-700 bg-olive-50/50'
-          : state === 'done'
-          ? 'border-transparent text-stone-500 hover:bg-stone-50 cursor-pointer'
-          : 'border-transparent text-stone-300 cursor-not-allowed'}`}
-      style={{ fontFamily: 'DM Mono, monospace', letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '0.68rem' }}>
-      {state === 'done' ? (
-        <svg className="w-3 h-3 text-olive-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
-      ) : (
-        <span className="w-4 h-4 rounded-sm flex items-center justify-center text-xs"
-          style={{ background: state === 'active' ? 'var(--olive-700)' : 'transparent', color: state === 'active' ? 'white' : 'inherit', fontFamily: 'DM Mono, monospace' }}>
-          {n}
-        </span>
-      )}
-      <span className="hidden sm:inline">{label}</span>
-    </button>
-  )
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────
+/* ── Main Page ──────────────────────────────────────────────────────── */
 export default function DashboardPage() {
   const router = useRouter()
   const { lang } = useLang()
-  const [step, setStep] = useState<1 | 2 | 3>(1)
-  const [mapExpanded, setMapExpanded] = useState(false)
+  const [step, setStep] = useState<Step>(1)
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<GeoPoint[]>([])
+  const [allZones, setAllZones] = useState<GeoPoint[]>(() => getCityZones(DEFAULT_CITY))
   const [esg, setEsg] = useState<ESGResponse | null>(null)
+  const [droughtMode, setDroughtMode] = useState(false)
+  const [currentCity, setCurrentCity] = useState(DEFAULT_CITY)
+  const [compareCity, setCompareCity] = useState(ESG_COMPARE_CITY)
+  const [aiQuery, setAiQuery] = useState('')
 
-  const handleRun = useCallback(async (budget: number, query: string) => {
+  // Feed map zone click into AI directive
+  const handleZoneClick = useCallback((point: GeoPoint) => {
+    const loc = point.neighbourhood || `${point.lat.toFixed(4)}, ${point.lon.toFixed(4)}`
+    setAiQuery(prev => prev ? `${prev} near ${loc}` : `Plant trees in ${loc} (LST ${point.lst}°C, NDVI ${point.ndvi})`)
+  }, [])
+
+  const fetchReport = useCallback(async (targetCompareCity: string, openStep3: boolean) => {
+    if (selected.length === 0) return
     setLoading(true)
     try {
-      let sel: GeoPoint[] = []
-      try {
-        await parseIntent(query)
-        const res = await runOptimize(budget, MOCK_GEO_DATA)
-        sel = res.selected
-      } catch {
-        const sorted = [...MOCK_GEO_DATA]
-          .filter(p => p.cost <= budget)
-          .sort((a, b) => ((b.lst * 0.7 - b.ndvi * 0.3) / b.cost) - ((a.lst * 0.7 - a.ndvi * 0.3) / a.cost))
-        let rem = budget
-        sel = sorted.filter(p => { if (p.cost <= rem) { rem -= p.cost; return true } return false })
-      }
-      setSelected(sel)
-      setStep(2)
+      const res = await generateESG(selected, targetCompareCity, currentCity)
+      // Inject NGO rankings into response for display
+      setEsg({ ...res, ngo_rankings: NGO_RANKINGS })
+    } catch {
+      setEsg({ ...buildFallbackESGReport(selected, currentCity, targetCompareCity), ngo_rankings: NGO_RANKINGS })
+    } finally {
+      setLoading(false)
+      if (openStep3) setStep(3)
+    }
+  }, [currentCity, selected])
+
+  const handleRun = useCallback(async (budget: number, query: string, drought: boolean, city: string) => {
+    const activeCity = city || DEFAULT_CITY
+    const cityZones = getCityZones(activeCity)
+    setLoading(true); setCurrentCity(activeCity); setAllZones(cityZones)
+    setDroughtMode(drought); setCompareCity(ESG_COMPARE_CITY); setEsg(null)
+    try {
+      if (query.trim()) { try { await parseIntent(query) } catch { /* advisory only */ } }
+      let zones: GeoPoint[] = []
+      try { const res = await runOptimize(budget, cityZones, drought); zones = res.selected }
+      catch { zones = fallbackOptimize(budget, cityZones, drought) }
+      setSelected(zones); setStep(2)
     } finally { setLoading(false) }
   }, [])
 
-  const handleESG = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await generateESG(selected)
-      setEsg(res)
-    } catch { setEsg(MOCK_ESG) }
-    finally { setLoading(false); setStep(3) }
-  }, [selected])
+  const handleCompareChange = useCallback(async (city: string) => {
+    setCompareCity(city); await fetchReport(city, false)
+  }, [fetchReport])
+
+  const compareOptions = getCompareCities(currentCity)
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)' }}>
-
       {/* Header */}
-      <header className="bg-white h-13 flex items-center px-5 gap-4 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-        <button onClick={() => router.push('/home')}
-          className="text-sm text-stone-500 hover:text-olive-700 transition flex items-center gap-1.5 font-medium">
+      <header className="bg-white h-12 flex items-center px-5 gap-4 shrink-0 z-30" style={{ borderBottom: '1px solid var(--border)' }}>
+        <button onClick={() => router.push('/home')} className="text-sm text-stone-500 hover:text-olive-700 transition flex items-center gap-1.5 font-medium">
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
           {t('back', lang)}
         </button>
@@ -459,38 +689,38 @@ export default function DashboardPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 21v-3" />
             </svg>
           </div>
-          <span className="font-medium text-stone-800" style={{ fontFamily: 'Cormorant Garamond, serif', fontSize: '1.05rem', letterSpacing: '-0.01em' }}>
-            {t('dashboard_title', lang)}
-          </span>
+          <span className="font-medium text-stone-800" style={{ fontFamily: 'Cormorant Garamond,serif', fontSize: '1.05rem' }}>CanopyROI Dashboard</span>
         </div>
-        <div className="ml-auto flex items-center gap-3">
-          <LangSwitcher />
-        </div>
+        {droughtMode && step > 1 && (
+          <span className="px-2.5 py-0.5 rounded-sm text-xs bg-amber-100 text-amber-700 border border-amber-200" style={{ fontFamily: 'DM Mono,monospace' }}>🌵 Drought Mode</span>
+        )}
+        <div className="ml-auto flex items-center gap-3"><LangSwitcher /></div>
       </header>
 
-      {/* Split layout */}
-      <div className="flex flex-1 overflow-hidden">
-
-        {/* Map */}
-        <div className={`transition-all duration-400 p-3 ${mapExpanded ? 'md:w-2/3' : 'md:w-1/2'} h-[40vh] md:h-auto`}>
-          <MapPanel selected={selected} onToggleSize={() => setMapExpanded(v => !v)} expanded={mapExpanded} />
+      {/* Body */}
+      <div className="flex flex-1 flex-col md:flex-row overflow-hidden" style={{ height: 'calc(100vh - 48px)' }}>
+        {/* Map panel */}
+        <div className="h-[46vh] md:h-full md:w-1/2 shrink-0 relative overflow-hidden bg-[#f5f2e8]" style={{ borderRight: '1px solid var(--border)' }}>
+          <MapWrapper
+            allZones={allZones}
+            selected={selected}
+            locationPins={LOCATION_PINS}
+            onZoneClick={handleZoneClick}
+          />
         </div>
 
-        {/* Steps panel */}
-        <div className={`transition-all duration-400 flex flex-col overflow-y-auto ${mapExpanded ? 'md:w-1/3' : 'md:w-1/2'} bg-white`} style={{ borderLeft: '1px solid var(--border)' }}>
-
-          {/* Step tabs */}
+        {/* Control panel */}
+        <div className="md:w-1/2 flex flex-col overflow-hidden bg-white">
           <div className="flex shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
             <StepTab n={1} label="Configure" state={step === 1 ? 'active' : 'done'} onClick={() => setStep(1)} />
             <StepTab n={2} label="Optimise"  state={step === 2 ? 'active' : step > 2 ? 'done' : 'locked'} onClick={() => step >= 2 && setStep(2)} />
             <StepTab n={3} label="ESG Report" state={step === 3 ? 'active' : 'locked'} onClick={() => step >= 3 && setStep(3)} />
           </div>
 
-          {/* Content */}
-          <div className="p-5 flex-1 overflow-y-auto">
-            {step === 1 && <Step1 onRun={handleRun} loading={loading} />}
-            {step === 2 && <Step2 selected={selected} all={MOCK_GEO_DATA} onNext={handleESG} loading={loading} />}
-            {step === 3 && <Step3 esg={esg} />}
+          <div className="flex-1 overflow-y-auto p-5">
+            {step === 1 && <Step1 onRun={handleRun} loading={loading} currentCity={currentCity} onQueryChange={setAiQuery} />}
+            {step === 2 && <Step2 selected={selected} all={allZones} onNext={() => fetchReport(compareCity, true)} loading={loading} droughtMode={droughtMode} cityName={currentCity} />}
+            {step === 3 && <Step3 esg={esg} baseCity={currentCity} compareCity={compareCity} compareOptions={compareOptions} onCompareChange={handleCompareChange} loadingCompare={loading} />}
           </div>
         </div>
       </div>

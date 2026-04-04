@@ -203,7 +203,7 @@ export default function HomePage() {
           {/* Right — copy */}
           <div className="space-y-8 order-1 md:order-2">
             <div>
-              <span className="section-label">Environment & Sustainability · AI Hackathon</span>
+              <span className="section-label">Environment & Sustainability</span>
               <div className="w-8 h-px mt-3 mb-6" style={{ background: 'var(--olive-500)' }} />
             </div>
 
@@ -374,7 +374,7 @@ export default function HomePage() {
       <footer className="py-8 border-t" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
         <div className="max-w-7xl mx-auto px-8 flex items-center justify-between">
           <p className="text-xs text-stone-400" style={{ fontFamily: 'DM Mono, monospace' }}>
-            CanopyROI &middot; AI Hackathon
+            CanopyROI &middot; Urban Canopy Intelligence
           </p>
           <p className="text-xs text-stone-400" style={{ fontFamily: 'DM Mono, monospace' }}>
             Sentinel-2 · GEE · IPCC Tier-1
